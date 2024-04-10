@@ -1,85 +1,65 @@
 from osgeo import gdal
 import numpy as np
-import os
-from affine import Affine
+import cv2
+from google.colab.patches import cv2_imshow
 
-def crop_image(input_image, output_folder, tile_size=2048):
-    # Open the input image
-    input_ds = gdal.Open(input_image)
+# Define input and output paths
+input_image = "/content/drive/MyDrive/osimlipal_1.tif"
+output_image_crop = "/content/drive/MyDrive/trying/tif1.tif"
+output_image_vegetation = "/content/drive/MyDrive/trying/vegetation.tif"
 
-    # Check if the input image was successfully opened
-    if input_ds is None:
-        print("Error opening input image.")
-        return
+# Open the input image
+input_ds = gdal.Open(input_image)
 
-    # Read the image as an array
-    image_array = np.transpose(np.array([input_ds.GetRasterBand(i+1).ReadAsArray() for i in range(input_ds.RasterCount)]), (1, 2, 0))
+# Get the number of bands in the input image
+num_bands = input_ds.RasterCount
 
-    # Get image dimensions
-    image_height, image_width, _ = image_array.shape
+# Specify which bands to keep (assuming first three bands represent Red, Green, and Blue)
+bands_to_keep = [1, 2, 3]
 
-    # Calculate number of tiles in each dimension
-    num_tiles_x = (image_width - 1) // tile_size + 1
-    num_tiles_y = (image_height - 1) // tile_size + 1
+# Read and stack the selected bands
+band_data = []
+for band_num in bands_to_keep:
+    band = input_ds.GetRasterBand(band_num)
+    band_data.append(band.ReadAsArray())
 
-    # Create output folder if it doesn't exist
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+# Stack bands together
+rgb_image = np.stack(band_data, axis=-1)
 
-    # Get geotransform and projection information
-    geotransform = input_ds.GetGeoTransform()
-    projection = input_ds.GetProjection()
+# Compute percentiles for each band
+lower_percentile = 0.5
+upper_percentile = 99.5
+percentiles = np.percentile(rgb_image, (lower_percentile, upper_percentile), axis=(0, 1))
 
-    # Loop through each tile
-    for y in range(num_tiles_y):
-        for x in range(num_tiles_x):
-            # Calculate tile coordinates
-            x1 = x * tile_size
-            y1 = y * tile_size
-            x2 = min(x1 + tile_size, image_width)
-            y2 = min(y1 + tile_size, image_height)
+# Calculate clip values
+clip_min = percentiles[0]
+clip_max = percentiles[1]
 
-            # Crop tile
-            cropped_image = image_array[y1:y2, x1:x2, :]
+# Clip values to min and max
+image = np.clip(rgb_image, clip_min, clip_max)
 
-            # Write the output tile
-            tile_filename = f"{os.path.splitext(os.path.basename(input_image))[0]}_tile_{y}_{x}.tif"
-            tile_path = os.path.join(output_folder, tile_filename)
+# Scale values to 0-255
+image = ((image - clip_min) / (clip_max - clip_min)) * 255
+image = image.astype(np.uint8)
 
-            print("Creating tile:", tile_path)  # Added for debugging
+# Replace No Data values (assumed to be represented by 0) with a specific integer value
+no_data_value = 255  # Choose any integer value that doesn't represent valid data
+image[image == 0] = no_data_value
 
-            driver = gdal.GetDriverByName('GTiff')
-            tile_ds = driver.Create(tile_path, x2 - x1, y2 - y1, 3, gdal.GDT_Byte)
+# Write the output image
+driver = gdal.GetDriverByName('GTiff')
+output_ds = driver.Create(output_image_crop, image.shape[1], image.shape[0], 3, gdal.GDT_Byte)
+for i in range(3):
+    output_ds.GetRasterBand(i + 1).WriteArray(image[:, :, i])
 
-            print("Tile dataset:", tile_ds)  # Added for debugging
+# Copy the georeferencing information
+output_ds.SetProjection(input_ds.GetProjection())
+output_ds.SetGeoTransform(input_ds.GetGeoTransform())
 
-            if tile_ds is None:
-                print("Failed to create tile dataset.")
-                continue
+# Close the datasets
+input_ds = None
+output_ds = None
 
-            for i in range(3):
-                tile_ds.GetRasterBand(i + 1).WriteArray(cropped_image[:, :, i])
+print("Image conversion completed successfully.")
 
-            # Set georeferencing information
-            tile_geotransform = list(geotransform)
-            tile_geotransform[0] += x1 * geotransform[1]
-            tile_geotransform[3] += y1 * geotransform[5]
 
-            tile_ds.SetGeoTransform(tile_geotransform)
-            tile_ds.SetProjection(projection)
-
-            tile_ds = None
-
-    # Close the input dataset
-    input_ds = None
-
-    print("Image cropping completed successfully.")
-
-# Input image path
-input_image_path = "/content/drive/MyDrive/trying/tif1.tif"
-
-# Output folder path
-output_folder_path = "/content/drive/MyDrive/trying/tiles"
-
-# Perform cropping to tiles
-crop_image(input_image_path, output_folder_path)
